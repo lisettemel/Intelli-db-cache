@@ -40,15 +40,16 @@ CREATE TABLE domains (
 -- ----- Tabla: domain_features -----
 -- Las 6 features por dominio (3 léxicas + 3 DNS), relación 1-a-1 con
 -- domains. Cada feature es una columna atómica (1NF) -- NO un JSON.
--- Renombrar las columnas a los nombres reales de tus features.
+-- Son exactamente las features que calcula el modelo (intelli-dns
+-- src/model/features.py); deben mantenerse en sincronía con él.
 CREATE TABLE domain_features (
-    domain_id    BIGINT PRIMARY KEY REFERENCES domains(domain_id) ON DELETE CASCADE,
-    lex_length   REAL,   -- ej. longitud del dominio
-    lex_entropy  REAL,   -- ej. entropía de Shannon del string
-    lex_digits   REAL,   -- ej. proporción de dígitos
-    dns_a_count  INT,    -- ej. número de registros A
-    dns_ttl      INT,    -- ej. TTL del registro
-    dns_age_days INT     -- ej. edad del dominio en días (WHOIS)
+    domain_id              BIGINT PRIMARY KEY REFERENCES domains(domain_id) ON DELETE CASCADE,
+    domain_length          INTEGER,   -- léxica: longitud total del string
+    num_dots               INTEGER,   -- léxica: cantidad de puntos
+    has_suspicious_keyword SMALLINT,  -- léxica: 0/1 token en keywords sospechosas
+    num_a_records          INTEGER,   -- DNS: registros A (0 en NXDOMAIN)
+    num_ns_records         INTEGER,   -- DNS: registros NS (0 en NXDOMAIN)
+    has_txt                SMALLINT   -- DNS: 0/1 existe registro TXT
 );
 
 

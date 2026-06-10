@@ -1,8 +1,7 @@
 {
   "name": "cache",
   "version": "1.0.0",
-  "description": "Redis corre en la misma VM que PostgreSQL. Su única función es guardar en RAM tres cosas:",
-  "main": "load-whitelist.js",
+  "description": "Configuración de Redis (caché de veredictos) para intelli-dns.",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

@@ -1,12 +1,15 @@
 # Redis — Caché de intelli-dns
 
-Redis corre en la misma VM que PostgreSQL. Su única función es guardar en RAM tres cosas:
+Redis corre en la misma VM que PostgreSQL. Su única función es guardar en RAM dos cosas:
 
 | Qué | Clave (Key) | TTL |
 |-----|-------------|-----|
-| Dominio malicioso | `domain:<nombre>` | 24 h |
+| Veredicto de dominio (malicioso **y** benigno) | `verdict:<dominio>` | 24 h |
 | Stats globales | `stats:global` | 5 min |
-| Whitelist de dominios conocidos | `whitelist:domains` (Set) | Sin expiración |
+
+El backend además usa el prefijo `rl:*` para su rate limiting (express-rate-limit con store de Redis); esas claves las administra él.
+
+Los veredictos `unknown` (ML caído) **no se cachean**: son transitorios y deben reintentar contra el ML en el siguiente check.
 
 ---
 
@@ -32,55 +35,38 @@ REDIS_PORT=6379
 REDIS_PASSWORD=tuPasswordSeguraDeRedis
 ```
 
----
-
-## Cargar la whitelist (solo una vez al desplegar)
-
-```bash
-node load-whitelist.js
-```
-
-Lee el archivo `tranco_top1m_domains.csv` y carga el millón de dominios en el Set `whitelist:domains` de Redis en lotes de 10 000. Tarda unos segundos. Solo necesitas correrlo una vez, o cuando actualices el CSV.
+> `redis.conf` exige auth (`requirepass`). El backend debe mandar la misma
+> password vía su variable `REDIS_PASSWORD`.
 
 ---
 
 ## Cómo el backend Express llama a Redis
 
-El backend usa la librería **`ioredis`**. Estas son las tres operaciones concretas:
+El backend usa la librería **`ioredis`**. Estas son las operaciones concretas:
 
-### 1. Verificar whitelist antes de clasificar
-
-```js
-// Antes de llamar al modelo ML, chequear si es un dominio conocido
-const isWhitelisted = await redis.sismember('whitelist:domains', domain);
-if (isWhitelisted) {
-  return { verdict: 'benign', confidence: 1.0, source: 'whitelist' };
-}
-```
-
-### 2. Cache-Aside para dominios maliciosos
+### 1. Cache-Aside de veredictos (ambos: malicious y benign)
 
 ```js
 // Intentar leer del caché
-const cached = await redis.get(`domain:${domain}`);
+const cached = await redis.get(`verdict:${domain}`);
 if (cached) {
-  return { ...JSON.parse(cached), source: 'cache' };
+  return { ...JSON.parse(cached), cached: true };
 }
 
 // Si no está → llamar al modelo ML y a la BD
 const result = await callModelML(domain);
 await db.query('SELECT fn_upsert_domain($1,$2,$3)', [domain, result.verdict, result.confidence]);
 
-// Solo guardar en Redis si es malicioso
-if (result.verdict === 'malicious') {
-  await redis.setex(`domain:${domain}`, 86400, JSON.stringify({
+// Cachear malicious Y benign (unknown nunca se cachea)
+if (result.verdict !== 'unknown') {
+  await redis.setex(`verdict:${domain}`, 86400, JSON.stringify({
     verdict: result.verdict,
     confidence: result.confidence
   }));
 }
 ```
 
-### 3. Stats globales con caché de 5 minutos
+### 2. Stats globales con caché de 5 minutos
 
 ```js
 const cached = await redis.get('stats:global');
@@ -92,12 +78,12 @@ await redis.setex('stats:global', 300, JSON.stringify(rows[0]));
 return rows[0];
 ```
 
-### 4. Invalidar caché al reclasificar un dominio
+### 3. Invalidar caché al reclasificar un dominio
 
 ```js
 // Cuando un admin cambia el veredicto de un dominio
 await db.query('SELECT fn_upsert_domain($1,$2,$3)', [domain, newVerdict, confidence]);
-await redis.del(`domain:${domain}`); // Borrar del caché para que se recalcule
+await redis.del(`verdict:${domain}`); // Borrar del caché para que se recalcule
 ```
 
 ---

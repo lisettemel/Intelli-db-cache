@@ -28,6 +28,9 @@ $$ LANGUAGE plpgsql;
 -- Inserta un dominio nuevo con su veredicto, o lo actualiza si ya
 -- existe (reclasificación -> sobrescribe). Devuelve el domain_id.
 -- Se llama después de que el ML clasifica en un MISS de caché.
+-- Caso 'unknown' (ML caído): NO sobrescribe un veredicto real ya
+-- existente — solo asegura que el dominio exista para poder loggear
+-- el evento en check_events.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_upsert_domain(
     p_domain      TEXT,
@@ -38,6 +41,19 @@ RETURNS BIGINT AS $$
 DECLARE
     v_domain_id BIGINT;
 BEGIN
+    IF p_verdict = 'unknown' THEN
+        INSERT INTO domains (domain, verdict, confidence, last_classified)
+        VALUES (p_domain, p_verdict, p_confidence, now())
+        ON CONFLICT (domain) DO NOTHING
+        RETURNING domain_id INTO v_domain_id;
+
+        IF v_domain_id IS NULL THEN
+            SELECT domain_id INTO v_domain_id FROM domains WHERE domain = p_domain;
+        END IF;
+
+        RETURN v_domain_id;
+    END IF;
+
     INSERT INTO domains (domain, verdict, confidence, last_classified)
     VALUES (p_domain, p_verdict, p_confidence, now())
     ON CONFLICT (domain) DO UPDATE
@@ -57,31 +73,31 @@ $$ LANGUAGE plpgsql;
 -- Se llama junto con fn_upsert_domain tras la clasificación.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_save_features(
-    p_domain_id    BIGINT,
-    p_lex_length   REAL,
-    p_lex_entropy  REAL,
-    p_lex_digits   REAL,
-    p_dns_a_count  INT,
-    p_dns_ttl      INT,
-    p_dns_age_days INT
+    p_domain_id              BIGINT,
+    p_domain_length          INTEGER,
+    p_num_dots               INTEGER,
+    p_has_suspicious_keyword SMALLINT,
+    p_num_a_records          INTEGER,
+    p_num_ns_records         INTEGER,
+    p_has_txt                SMALLINT
 )
 RETURNS VOID AS $$
 BEGIN
     INSERT INTO domain_features (
-        domain_id, lex_length, lex_entropy, lex_digits,
-        dns_a_count, dns_ttl, dns_age_days
+        domain_id, domain_length, num_dots, has_suspicious_keyword,
+        num_a_records, num_ns_records, has_txt
     )
     VALUES (
-        p_domain_id, p_lex_length, p_lex_entropy, p_lex_digits,
-        p_dns_a_count, p_dns_ttl, p_dns_age_days
+        p_domain_id, p_domain_length, p_num_dots, p_has_suspicious_keyword,
+        p_num_a_records, p_num_ns_records, p_has_txt
     )
     ON CONFLICT (domain_id) DO UPDATE
-        SET lex_length   = EXCLUDED.lex_length,
-            lex_entropy  = EXCLUDED.lex_entropy,
-            lex_digits   = EXCLUDED.lex_digits,
-            dns_a_count  = EXCLUDED.dns_a_count,
-            dns_ttl      = EXCLUDED.dns_ttl,
-            dns_age_days = EXCLUDED.dns_age_days;
+        SET domain_length          = EXCLUDED.domain_length,
+            num_dots               = EXCLUDED.num_dots,
+            has_suspicious_keyword = EXCLUDED.has_suspicious_keyword,
+            num_a_records          = EXCLUDED.num_a_records,
+            num_ns_records         = EXCLUDED.num_ns_records,
+            has_txt                = EXCLUDED.has_txt;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -163,7 +179,9 @@ $$ LANGUAGE plpgsql;
 -- ------------------------------------------------------------
 -- 7. fn_stats_me_history
 -- Timeline de detecciones de un usuario (GET /stats/me/history).
--- Paginado con LIMIT/OFFSET.
+-- Paginado con LIMIT/OFFSET. total_count repite en cada fila el total
+-- de eventos del usuario (COUNT(*) OVER ()) para que el cliente pueda
+-- paginar sin un segundo round-trip.
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_stats_me_history(
     p_anon_id CHAR(64),
@@ -174,11 +192,13 @@ RETURNS TABLE (
     domain      TEXT,
     verdict     verdict_enum,
     confidence  REAL,
-    checked_at  TIMESTAMPTZ
+    checked_at  TIMESTAMPTZ,
+    total_count BIGINT
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT d.domain, d.verdict, d.confidence, ce.checked_at
+    SELECT d.domain, d.verdict, d.confidence, ce.checked_at,
+           COUNT(*) OVER ()::BIGINT
     FROM check_events ce
     JOIN domains d ON d.domain_id = ce.domain_id
     WHERE ce.anon_id = p_anon_id
@@ -193,6 +213,8 @@ $$ LANGUAGE plpgsql;
 -- Estadísticas globales agregadas (GET /stats/global).
 -- El backend cachea el resultado en Redis (~5 min) porque la página
 -- es pública y cualquiera puede recargarla.
+-- detection_rate es FRACCIÓN 0..1 (no porcentaje): es lo que el
+-- frontend espera para renderizar el gauge (contrato detectionRate).
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_stats_global()
 RETURNS TABLE (
@@ -209,10 +231,10 @@ BEGIN
         (SELECT COUNT(*) FROM check_events)::BIGINT,
         (SELECT COUNT(*) FROM domains WHERE verdict = 'malicious')::BIGINT,
         (SELECT COUNT(*) FROM domains WHERE verdict = 'benign')::BIGINT,
-        ROUND(
+        COALESCE(ROUND(
             (SELECT COUNT(*) FROM domains WHERE verdict = 'malicious')::NUMERIC
-            / NULLIF((SELECT COUNT(*) FROM domains), 0) * 100,
-            2
-        );
+            / NULLIF((SELECT COUNT(*) FROM domains), 0),
+            4
+        ), 0);
 END;
 $$ LANGUAGE plpgsql;
