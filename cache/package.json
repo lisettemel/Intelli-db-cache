@@ -1,0 +1,17 @@
+{
+  "name": "cache",
+  "version": "1.0.0",
+  "description": "Redis corre en la misma VM que PostgreSQL. Su única función es guardar en RAM tres cosas:",
+  "main": "load-whitelist.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "ioredis": "^5.11.1"
+  }
+}

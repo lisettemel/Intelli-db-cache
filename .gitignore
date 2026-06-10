@@ -1,0 +1,10 @@
+# Credenciales reales - nunca subir a git
+cache/.env
+.env
+
+# Dependencias de Node
+cache/node_modules/
+node_modules/
+
+# CSV de dominios (archivo grande - subir por separado si es necesario)
+cache/data/tranco_top1m_domains.csv

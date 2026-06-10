@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  # ----- Servicio: PostgreSQL -----
+  db:
+    image: postgres:16-alpine
+    container_name: intellidns_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-intellidns}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-supersecurepassword2026}
+    volumes:
+      # Montar scripts de inicialización de la base de datos
+      - ../database:/docker-entrypoint-initdb.d
+      # Persistencia de datos en disco (la base de datos sí persiste)
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      # Se vincula por defecto a localhost (127.0.0.1) para desarrollo local seguro.
+      # En producción, se puede cambiar en el .env a la IP privada de la VM (ej. 10.0.0.5)
+      - "${DB_BIND_IP:-127.0.0.1}:5432:5432"
+    networks:
+      - intellidns_net
+
+  # ----- Servicio: Redis -----
+  redis:
+    image: redis:7-alpine
+    container_name: intellidns_redis
+    restart: unless-stopped
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      # Montar la configuración personalizada de Redis
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      # Vinculado por defecto a localhost (127.0.0.1).
+      # En producción, se cambia en el .env a la IP privada de la VM.
+      - "${REDIS_BIND_IP:-127.0.0.1}:6379:6379"
+    networks:
+      - intellidns_net
+
+networks:
+  intellidns_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
