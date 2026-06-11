@@ -1,6 +1,6 @@
 # Intelli-db-cache
 
-Database and cache layer for **intelli-dns** — an intelligent DNS security system that classifies domains as malicious, benign, or unknown using a machine-learning model. This repository contains the PostgreSQL schema, stored functions, Redis cache configuration, Docker Compose deployment, and the whitelist bulk-loader script.
+Database and cache layer for **intelli-dns** — an intelligent DNS security system that classifies domains as malicious, benign, or unknown using a machine-learning model. This repository contains the PostgreSQL schema, stored functions, Redis cache configuration, and Docker Compose deployment.
 
 ---
 
@@ -14,9 +14,7 @@ Database and cache layer for **intelli-dns** — an intelligent DNS security sys
 - [Cache — `cache/`](#cache--cache)
   - [`docker-compose.yml` — Services](#docker-composeyml--services)
   - [`redis.conf` — Redis Configuration](#redisconf--redis-configuration)
-  - [`load-whitelist.js` — Whitelist Loader](#load-whitelistjs--whitelist-loader)
   - [`package.json` — Node Dependencies](#packagejson--node-dependencies)
-  - [`.env.example` — Environment Variables](#envexample--environment-variables)
   - [`data/tranco_top1m_domains.csv` — Domain Whitelist](#datatrancocsv--domain-whitelist)
 - [How Redis is Used by the Backend](#how-redis-is-used-by-the-backend)
 - [Quick Start](#quick-start)
@@ -31,9 +29,9 @@ Database and cache layer for **intelli-dns** — an intelligent DNS security sys
 ┌────────────────┐     ┌──────────────────────────────────────────────┐
 │  Browser Ext.  │────▶│  Backend Express (separate repo)             │
 │  (intelli-dns) │     │                                              │
-└────────────────┘     │  1. Check whitelist in Redis (SET)           │
-                       │  2. Check cache in Redis (key-value)         │
-                       │  3. If MISS → call ML model → save to DB    │
+└────────────────┘     │  1. Check verdict cache in Redis             │
+                       │  2. If MISS → call ML model → save to DB    │
+                       │  3. Cache verdict in Redis (if not unknown)  │
                        │  4. Log event → return verdict               │
                        └──────────┬──────────────┬────────────────────┘
                                   │              │
@@ -64,11 +62,9 @@ Intelli-db-cache/
 │   └── functions.sql           # 8 PL/pgSQL functions called by the backend
 │
 └── cache/                      # Redis cache + Docker orchestration
-    ├── .env.example            # Template for environment variables
-    ├── README.md               # Detailed cache documentation
+    ├── README.md               # Detailed cache documentation (in Spanish)
     ├── docker-compose.yml      # Defines Postgres + Redis containers
     ├── redis.conf              # Hardened Redis configuration
-    ├── load-whitelist.js       # Node.js script to bulk-load whitelist
     ├── package.json            # Node dependencies (ioredis, dotenv)
     ├── package-lock.json       # Locked dependency versions
     └── data/
@@ -79,28 +75,43 @@ Intelli-db-cache/
 
 ## Database — `database/`
 
-These SQL files are automatically executed by the PostgreSQL container on first startup (mounted to `/docker-entrypoint-initdb.d`).
+These SQL files are automatically executed by the PostgreSQL container on first startup. Docker Compose mounts them into `/docker-entrypoint-initdb.d/` with explicit ordering:
+- `01_schema.sql` ← `schema.sql`
+- `02_functions.sql` ← `functions.sql`
 
 ### `schema.sql` — Tables & Types
 
-Defines the normalized (3NF) database schema. No personal data is stored by design.
+Defines the normalized (3NF) database schema. **No personal data is stored by design.**
 
 #### Enum Types
 
 | Type | Values | Purpose |
 |------|--------|---------|
-| `verdict_enum` | `malicious`, `benign`, `unknown` | Classification result from the ML model |
+| `verdict_enum` | `malicious`, `benign`, `unknown` | ML classification result |
 | `report_enum` | `false_positive`, `false_negative` | User feedback type |
 
 #### Tables
 
 | Table | Purpose | Key Columns |
 |-------|---------|-------------|
-| **`users`** | Anonymous user identities | `anon_id` (SHA-256 hash, 64 hex chars) — no personal data |
+| **`users`** | Anonymous user identities | `anon_id` (SHA-256 hash, 64 hex chars) — no personal data stored |
 | **`domains`** | Catalog of all domains seen | `domain` (unique), `verdict`, `confidence`, `last_classified` |
-| **`domain_features`** | 6 ML features per domain (1-to-1 with `domains`) | 3 lexical (`lex_length`, `lex_entropy`, `lex_digits`) + 3 DNS (`dns_a_count`, `dns_ttl`, `dns_age_days`) |
+| **`domain_features`** | 6 ML features per domain (1-to-1 with `domains`) | 3 lexical + 3 DNS (see below) |
 | **`check_events`** | Audit log — one row per `/check` API call | `anon_id` → `users`, `domain_id` → `domains`, `was_cached` flag |
 | **`reports`** | User-submitted false positive/negative reports | Links `anon_id` + `domain_id` + `report_type`; does **not** auto-change verdicts |
+
+#### Domain Features (6 columns in `domain_features`)
+
+These match exactly the features computed by the ML model (`intelli-dns src/model/features.py`):
+
+| Column | Type | Category | Description |
+|--------|------|----------|-------------|
+| `domain_length` | `INTEGER` | Lexical | Total length of the domain string |
+| `num_dots` | `INTEGER` | Lexical | Number of dots in the domain |
+| `has_suspicious_keyword` | `SMALLINT` | Lexical | 0/1 flag — contains suspicious token |
+| `num_a_records` | `INTEGER` | DNS | Number of A records (0 for NXDOMAIN) |
+| `num_ns_records` | `INTEGER` | DNS | Number of NS records (0 for NXDOMAIN) |
+| `has_txt` | `SMALLINT` | DNS | 0/1 flag — has a TXT record |
 
 #### Indexes
 
@@ -122,13 +133,13 @@ Eight PL/pgSQL functions consumed by the backend Express API via `SELECT * FROM 
 | # | Function | Called by | What it does |
 |---|----------|-----------|--------------|
 | 1 | `fn_register_user(anon_id)` | `POST /register` | Inserts a new anonymous user. Returns `'registered'` or `'collision'` if the ID already exists. |
-| 2 | `fn_upsert_domain(domain, verdict, confidence)` | `POST /check` | Inserts a new domain or updates its verdict if it already exists (reclassification). Returns `domain_id`. |
-| 3 | `fn_save_features(domain_id, lex_length, lex_entropy, lex_digits, dns_a_count, dns_ttl, dns_age_days)` | `POST /check` | Saves or updates the 6 ML features for a domain (1-to-1 with `domains`). |
+| 2 | `fn_upsert_domain(domain, verdict, confidence)` | `POST /check` | Inserts or updates a domain's verdict. **Special behavior for `unknown`:** does NOT overwrite an existing real verdict — only ensures the domain row exists so the check event can be logged. |
+| 3 | `fn_save_features(domain_id, domain_length, num_dots, has_suspicious_keyword, num_a_records, num_ns_records, has_txt)` | `POST /check` | Saves or updates the 6 ML features for a domain (1-to-1 upsert). |
 | 4 | `fn_log_check(anon_id, domain_id, was_cached)` | `POST /check` | Logs a check event in the audit trail. Returns `event_id`. |
 | 5 | `fn_save_report(anon_id, domain_id, report_type)` | `POST /report` | Saves a user report (false positive/negative). Does **not** change the verdict. Returns `report_id`. |
-| 6 | `fn_stats_me(anon_id)` | `GET /stats/me` | Returns personal stats: total checked, malicious count, benign count, unknown count, and the date of first check. |
-| 7 | `fn_stats_me_history(anon_id, limit, offset)` | `GET /stats/me/history` | Returns paginated check history for a user (domain, verdict, confidence, timestamp). |
-| 8 | `fn_stats_global()` | `GET /stats/global` | Returns aggregate stats: total domains, total checks, malicious/benign counts, and detection rate percentage. Cached in Redis for 5 minutes. |
+| 6 | `fn_stats_me(anon_id)` | `GET /stats/me` | Returns personal stats: total checked, malicious count, benign count, unknown count, and date of first check. |
+| 7 | `fn_stats_me_history(anon_id, limit, offset)` | `GET /stats/me/history` | Returns paginated check history for a user. Includes `total_count` (via window function) so the client can paginate without a second round-trip. |
+| 8 | `fn_stats_global()` | `GET /stats/global` | Returns aggregate stats: total domains, total checks, malicious/benign counts, and detection rate as a **fraction (0–1)**, not a percentage. Cached in Redis for 5 minutes. |
 
 ---
 
@@ -144,9 +155,11 @@ Defines two Docker containers on a shared bridge network (`intellidns_net`):
 | **redis** (Redis) | `redis:7-alpine` | `intellidns_redis` | `6379` | In-memory only (no persistence) |
 
 Key behaviors:
-- On first startup, PostgreSQL automatically runs all `.sql` files in `database/` (mounted to `/docker-entrypoint-initdb.d`), creating the schema and functions.
+- On first startup, PostgreSQL automatically runs `schema.sql` then `functions.sql` (mounted as `01_schema.sql` and `02_functions.sql` in read-only mode).
 - Both services bind to `127.0.0.1` by default (safe for local development). In production, set `DB_BIND_IP` and `REDIS_BIND_IP` in `.env` to the VM's private IP.
-- Both restart automatically unless manually stopped (`restart: unless-stopped`).
+- `DB_PASSWORD` and `REDIS_PASSWORD` are **required** — docker-compose will fail if they are missing (uses `${VAR:?}` syntax).
+- The Redis password is **not hardcoded** in `redis.conf`. Instead, it is injected at runtime via the `--requirepass` flag in the docker-compose command.
+- Both services restart automatically unless manually stopped (`restart: unless-stopped`).
 
 ---
 
@@ -156,38 +169,18 @@ A hardened, cache-optimized configuration:
 
 | Setting | Value | Why |
 |---------|-------|-----|
-| `bind` | `0.0.0.0` | Listens on all interfaces inside the container (access is restricted by Docker port binding + firewall) |
-| `protected-mode` | `yes` | Requires authentication |
-| `requirepass` | set in file | Password for Redis connections |
+| `bind` | `0.0.0.0` | Listens on all interfaces inside the container (access restricted by Docker port binding + firewall) |
+| `protected-mode` | `yes` | Requires authentication for connections |
 | `save ""` | disabled | **No disk persistence (RDB off)** — avoids competing with PostgreSQL for disk I/O |
 | `appendonly` | `no` | **No AOF persistence** — pure in-memory cache |
 | `maxmemory` | `256mb` | Hard cap on Redis RAM usage |
 | `maxmemory-policy` | `allkeys-lru` | Evicts least-recently-used keys when memory is full |
+| `maxmemory-samples` | `5` | Ideal balance between performance and LRU precision |
 | `activedefrag` | `yes` | Automatically defragments memory in the background |
 
 Dangerous commands are **renamed to empty** (disabled): `FLUSHDB`, `FLUSHALL`, `CONFIG`, `SHUTDOWN`, `DEBUG`.
 
----
-
-### `load-whitelist.js` — Whitelist Loader
-
-A Node.js script that bulk-loads the Tranco top 1 million domains into a Redis Set (`whitelist:domains`). This Set is used by the backend to skip ML classification for known-safe domains.
-
-**How it works:**
-1. Reads environment variables (`REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`) from `.env`.
-2. Opens `data/tranco_top1m_domains.csv` as a stream (CSV format: `rank,domain`).
-3. Reads line by line, extracting and lowercasing each domain.
-4. Sends domains to Redis in batches of 10,000 using `SADD`.
-5. If Redis is not available, falls back to a **simulation mode** that loads domains into an in-memory JavaScript Set (useful for testing on Windows without Redis).
-
-**Usage:**
-```bash
-cd cache
-npm install
-node load-whitelist.js
-```
-
-> Only needs to be run **once** after deployment, or whenever the CSV is updated.
+> **Password note:** The `requirepass` directive is intentionally absent from `redis.conf` to avoid hardcoding secrets in git. The password is injected by docker-compose from the `REDIS_PASSWORD` environment variable via the `--requirepass` flag.
 
 ---
 
@@ -198,22 +191,7 @@ node load-whitelist.js
 | `ioredis` | `^5.11.1` | Redis client for Node.js |
 | `dotenv` | `^17.4.2` | Loads `.env` file into `process.env` |
 
----
-
-### `.env.example` — Environment Variables
-
-Template file — copy to `.env` and fill in real values. **Never commit `.env` to git.**
-
-| Variable | Example Value | Description |
-|----------|---------------|-------------|
-| `DB_BIND_IP` | `10.0.0.5` | IP address PostgreSQL binds to (use `127.0.0.1` for local dev) |
-| `REDIS_BIND_IP` | `10.0.0.5` | IP address Redis binds to (use `127.0.0.1` for local dev) |
-| `DB_NAME` | `intellidns` | PostgreSQL database name |
-| `DB_USER` | `intellidns_admin` | PostgreSQL username |
-| `DB_PASSWORD` | *(your password)* | PostgreSQL password |
-| `REDIS_HOST` | `10.0.0.5` | Redis host for the whitelist loader |
-| `REDIS_PORT` | `6379` | Redis port |
-| `REDIS_PASSWORD` | *(your password)* | Redis password (must match `requirepass` in `redis.conf`) |
+These dependencies are used by backend utilities or scripts that interact with Redis.
 
 ---
 
@@ -228,21 +206,21 @@ A ~22 MB CSV file containing the **Tranco top 1 million domains** (a well-known 
 ...
 ```
 
-These domains are loaded into the Redis Set `whitelist:domains` so the backend can instantly skip ML classification for known-safe domains.
-
 > This file is listed in `.gitignore` due to its size. Download it from [Tranco List](https://tranco-list.eu/) if needed.
 
 ---
 
 ## How Redis is Used by the Backend
 
-Redis stores three types of data in memory:
+Redis stores two types of data in memory, plus rate-limiting keys managed by the backend:
 
 | What | Redis Key | Type | TTL | Purpose |
 |------|-----------|------|-----|---------|
-| Known-safe domains | `whitelist:domains` | Set | None (permanent) | Skip ML classification for the top 1M domains |
-| Malicious domain cache | `domain:<name>` | String (JSON) | 24 hours | Avoid repeated ML calls for already-classified malicious domains |
+| Domain verdict cache | `verdict:<domain>` | String (JSON) | 24 hours | Cache ML verdicts to avoid repeated classification calls |
 | Global statistics | `stats:global` | String (JSON) | 5 minutes | Cache expensive aggregate queries from PostgreSQL |
+| Rate limiting | `rl:*` | Managed by `express-rate-limit` | Varies | Backend-managed rate limiting (not configured here) |
+
+**Important:** Only `malicious` and `benign` verdicts are cached. `unknown` verdicts (when the ML model is down) are **never cached** — they are transient and should be retried on the next check.
 
 ### Request Flow
 
@@ -250,11 +228,8 @@ Redis stores three types of data in memory:
 User visits a domain
         │
         ▼
-  ┌─ Is it in whitelist:domains? ──▶ YES → Return "benign" (source: whitelist)
-  │     NO
-  │     ▼
-  ├─ Is it in domain:<name> cache? ──▶ YES → Return cached verdict (source: cache)
-  │     NO
+  ┌─ Is verdict:<domain> in Redis? ──▶ YES → Return cached verdict (cached: true)
+  │     NO (cache miss)
   │     ▼
   ├─ Call ML model for classification
   │     │
@@ -262,10 +237,22 @@ User visits a domain
   ├─ Save to PostgreSQL (fn_upsert_domain + fn_save_features)
   │     │
   │     ▼
-  └─ If malicious → Cache in Redis for 24h
+  ├─ If verdict ≠ unknown → Cache in Redis for 24h
+  │     │
+  │     ▼
+  └─ Log check event (fn_log_check)
         │
         ▼
-    Return verdict (source: model)
+    Return verdict to client
+```
+
+### Cache Invalidation
+
+When an admin reclassifies a domain, the cached verdict is deleted so the next request fetches the updated result:
+
+```js
+await db.query('SELECT fn_upsert_domain($1,$2,$3)', [domain, newVerdict, confidence]);
+await redis.del(`verdict:${domain}`);
 ```
 
 ---
@@ -277,9 +264,24 @@ User visits a domain
 ```bash
 git clone https://github.com/lisettemel/Intelli-db-cache.git
 cd Intelli-db-cache/cache
-cp .env.example .env
-# Edit .env with your real passwords and IP addresses
 ```
+
+Create a `.env` file in the `cache/` directory with the required variables:
+
+```env
+DB_BIND_IP=127.0.0.1        # Use VM private IP in production (e.g. 10.0.0.5)
+REDIS_BIND_IP=127.0.0.1     # Use VM private IP in production
+
+DB_NAME=intellidns
+DB_USER=intellidns_backend_client
+DB_PASSWORD=yourSecurePassword
+
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+REDIS_PASSWORD=yourSecureRedisPassword
+```
+
+> **Never commit `.env` to git.** It is already listed in `.gitignore`.
 
 ### 2. Start services
 
@@ -288,28 +290,21 @@ docker-compose up -d
 ```
 
 This will:
-- Start **PostgreSQL 16** on port `5432` and automatically create the database schema and functions from `database/`.
+- Start **PostgreSQL 16** on port `5432` and automatically create the database schema and functions.
 - Start **Redis 7** on port `6379` with the hardened configuration.
 
-### 3. Load the whitelist (one-time)
-
-```bash
-npm install
-node load-whitelist.js
-```
-
-### 4. Verify
+### 3. Verify
 
 ```bash
 # Check containers are running
 docker ps
 
 # Test PostgreSQL connection
-docker exec -it intellidns_postgres psql -U intellidns_admin -d intellidns -c "\dt"
+docker exec -it intellidns_postgres psql -U intellidns_backend_client -d intellidns -c "\dt"
 
 # Test Redis connection
-docker exec -it intellidns_redis redis-cli -a <your_redis_password> SCARD whitelist:domains
-# Expected output: (integer) 1000000
+docker exec -it intellidns_redis redis-cli -a <your_redis_password> PING
+# Expected output: PONG
 ```
 
 ---
