@@ -109,9 +109,9 @@ Estas coinciden exactamente con las features calculadas por el modelo ML (`intel
 | `domain_length` | `INTEGER` | Léxica | Longitud total del string del dominio |
 | `num_dots` | `INTEGER` | Léxica | Cantidad de puntos en el dominio |
 | `has_suspicious_keyword` | `SMALLINT` | Léxica | Flag 0/1 — contiene un token sospechoso |
-| `num_a_records` | `INTEGER` | DNS | Número de registros A (0 para NXDOMAIN) |
-| `num_ns_records` | `INTEGER` | DNS | Número de registros NS (0 para NXDOMAIN) |
-| `has_txt` | `SMALLINT` | DNS | Flag 0/1 — existe un registro TXT |
+| `num_a_records` | `INTEGER` | DNS | Cantidad de direcciones IP asociadas al dominio (registro A). Un valor de 0 significa que el dominio no resuelve a ninguna IP (NXDOMAIN / dominio inexistente) |
+| `num_ns_records` | `INTEGER` | DNS | Cantidad de servidores de nombres (NS) que administran el dominio. Un valor de 0 indica que no se encontraron servidores DNS autoritativos (NXDOMAIN / dominio inexistente) |
+| `has_txt` | `SMALLINT` | DNS | Flag 0/1 — indica si el dominio tiene un registro TXT (usado comúnmente para verificación de propiedad, SPF de correo, etc.). Los dominios maliciosos rara vez lo configuran |
 
 #### Índices
 
