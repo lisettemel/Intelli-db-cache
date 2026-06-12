@@ -24,6 +24,20 @@ $$ LANGUAGE plpgsql;
 
 
 -- ------------------------------------------------------------
+-- 1b. fn_user_exists
+-- Verifica si un anon_id ya está registrado. Lectura pura (no inserta).
+-- La usa POST /recover: recuperar una identidad es lo OPUESTO a registrar
+-- (registrar crea y falla si existe; recuperar tiene éxito solo si existe).
+-- ------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_user_exists(p_anon_id CHAR(64))
+RETURNS BOOLEAN AS $$
+BEGIN
+    RETURN EXISTS (SELECT 1 FROM users WHERE anon_id = p_anon_id);
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ------------------------------------------------------------
 -- 2. fn_upsert_domain
 -- Inserta un dominio nuevo con su veredicto, o lo actualiza si ya
 -- existe (reclasificación -> sobrescribe). Devuelve el domain_id.
