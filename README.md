@@ -303,7 +303,6 @@ docker exec -it intellidns_redis redis-cli -a <tu_password_de_redis> PING
 | Archivo | Descripción |
 |---------|-------------|
 | `.gitignore` | Excluye archivos `.env` (credenciales reales), `node_modules/`, y el archivo CSV grande de whitelist del control de versiones |
-| `LICENSE` | Licencia MIT — Copyright (c) 2026 Lisette Melo Reyes |
 
 ---
 
