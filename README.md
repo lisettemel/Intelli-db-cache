@@ -4,7 +4,7 @@ Capa de base de datos y caché para **intelli-dns** — un sistema inteligente d
 
 ---
 
-## 🏛️ Arquitectura
+## Arquitectura
 
 La base de datos y la caché están diseñadas como una capa de persistencia y rendimiento desacoplada, corriendo en contenedores aislados.```
 ┌────────────────┐     ┌──────────────────────────────────────────────┐
@@ -191,7 +191,7 @@ Un archivo CSV de ~22 MB que contiene el **top 1 millón de dominios de Tranco**
 
 ---
 
-## 🔗 Integración y Conexión con otros Sistemas
+## Integración y Conexión con otros Sistemas
 
 Esta capa de datos no se expone a internet. Solo interactúa directamente con el Backend de la siguiente manera:
 
@@ -242,7 +242,7 @@ await redis.del(`verdict:${domain}`);
 
 ---
 
-## 🚀 Cómo Desplegarlo Localmente
+## Cómo Desplegarlo Localmente
 
 Para levantar este entorno en un equipo de desarrollo:
 
@@ -319,8 +319,3 @@ sudo ufw allow from <IP_PRIVADA_BACKEND> to any port 6379 proto tcp  # Redis
 sudo ufw enable
 ```
 
----
-
-## Licencia
-
-Licencia MIT — Copyright (c) 2026 Lisette Melo Reyes. Consulta [LICENSE](LICENSE) para más detalles.
