@@ -4,28 +4,9 @@ Capa de base de datos y caché para **intelli-dns** — un sistema inteligente d
 
 ---
 
-## Tabla de Contenidos
+## 🏛️ Arquitectura
 
-- [Arquitectura General](#arquitectura-general)
-- [Estructura del Proyecto](#estructura-del-proyecto)
-- [Base de Datos — `database/`](#base-de-datos--database)
-  - [`schema.sql` — Tablas y Tipos](#schemasql--tablas-y-tipos)
-  - [`functions.sql` — Funciones Almacenadas](#functionssql--funciones-almacenadas)
-- [Caché — `cache/`](#caché--cache)
-  - [`docker-compose.yml` — Servicios](#docker-composeyml--servicios)
-  - [`redis.conf` — Configuración de Redis](#redisconf--configuración-de-redis)
-  - [`package.json` — Dependencias de Node](#packagejson--dependencias-de-node)
-  - [`data/tranco_top1m_domains.csv` — Whitelist de Dominios](#datatrancocsv--whitelist-de-dominios)
-- [Cómo el Backend Usa Redis](#cómo-el-backend-usa-redis)
-- [Inicio Rápido](#inicio-rápido)
-- [Seguridad de Red](#seguridad-de-red)
-- [Licencia](#licencia)
-
----
-
-## Arquitectura General
-
-```
+La base de datos y la caché están diseñadas como una capa de persistencia y rendimiento desacoplada, corriendo en contenedores aislados.```
 ┌────────────────┐     ┌──────────────────────────────────────────────┐
 │  Extensión de  │────▶│  Backend Express (repositorio separado)       │
 │  Navegador     │     │                                              │
@@ -210,7 +191,11 @@ Un archivo CSV de ~22 MB que contiene el **top 1 millón de dominios de Tranco**
 
 ---
 
-## Cómo el Backend Usa Redis
+## 🔗 Integración y Conexión con otros Sistemas
+
+Esta capa de datos no se expone a internet. Solo interactúa directamente con el Backend de la siguiente manera:
+
+### Uso de Redis por el Backend
 
 Redis almacena dos tipos de datos en memoria, más llaves de rate limiting administradas por el backend:
 
@@ -257,7 +242,11 @@ await redis.del(`verdict:${domain}`);
 
 ---
 
-## Inicio Rápido
+## 🚀 Cómo Desplegarlo Localmente
+
+Para levantar este entorno en un equipo de desarrollo:
+
+### Opción 1: Despliegue con Docker Compose (Recomendado)
 
 ### 1. Clonar y configurar
 
