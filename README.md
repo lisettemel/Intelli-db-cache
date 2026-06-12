@@ -6,25 +6,7 @@ Capa de base de datos y caché para **intelli-dns** — un sistema inteligente d
 
 ## Arquitectura
 
-La base de datos y la caché están diseñadas como una capa de persistencia y rendimiento desacoplada, corriendo en contenedores aislados.```
-┌────────────────┐     ┌──────────────────────────────────────────────┐
-│  Extensión de  │────▶│  Backend Express (repositorio separado)       │
-│  Navegador     │     │                                              │
-│  (intelli-dns) │     │  1. Revisar caché de veredictos en Redis     │
-└────────────────┘     │  2. Si MISS → llamar al modelo ML → guardar │
-                       │  3. Cachear veredicto (si no es unknown)     │
-                       │  4. Registrar evento → devolver veredicto    │
-                       └──────────┬──────────────┬────────────────────┘
-                                  │              │
-                       ┌──────────▼──────┐  ┌────▼─────────────┐
-                       │  Redis (caché)  │  │  PostgreSQL (BD) │
-                       │  Puerto 6379    │  │  Puerto 5432     │
-                       │  256 MB RAM     │  │  Persistente     │
-                       └─────────────────┘  └──────────────────┘
-                       ▲                    ▲
-                       │  ESTE REPOSITORIO  │
-                       └────────────────────┘
-```
+La base de datos y la caché están diseñadas como una capa de persistencia y rendimiento desacoplada, corriendo en contenedores aislados.
 
 Tanto PostgreSQL como Redis corren en la **misma VM** dentro de contenedores Docker, conectados por una red bridge privada (`intellidns_net`). Ninguno está expuesto a internet.
 
@@ -35,7 +17,6 @@ Tanto PostgreSQL como Redis corren en la **misma VM** dentro de contenedores Doc
 ```
 Intelli-db-cache/
 ├── .gitignore                  # Archivos excluidos del control de versiones
-├── LICENSE                     # Licencia MIT (Lisette Melo Reyes, 2026)
 ├── README.md                   # Este archivo
 │
 ├── database/                   # Esquema y funciones de PostgreSQL
